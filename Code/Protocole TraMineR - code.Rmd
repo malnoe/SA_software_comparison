@@ -1,0 +1,860 @@
+---
+title: "Protocole de comparaison des librairies d'analyse des trajectoires : TraMineR et TraMineRextras"
+author: "Garance Malnoë"
+date: "Avril 2026"
+output:
+  bookdown::pdf_document2:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+header-includes:
+ \usepackage{float}
+ \floatplacement{figure}{H}
+ \usepackage{mdframed}
+ \usepackage{array}
+ \usepackage{caption}
+ \usepackage{tikz}
+ \usetikzlibrary{shapes.geometric, arrows}
+documentclass: article
+classoption: a4paper
+geometry: margin = 1.5 cm
+---
+\newpage
+
+# Introduction ###
+L'objectif de ce document est de proposer une vue d'ensemble des possibilités qu'offrent les packages \texttt{TraMineR} et \texttt{TraMineRextras} en R pour l'analyse de séquences, et plus généralement de trajectoires. Ce document a été pensé pour être mis en parallèle avec son équivalent dédié à la librairie \texttt{TanaT} en Python, afin de comparer les deux outils et de déterminer le plus adapté selon la situation à traiter.
+
+Pour faciliter cette comparaison, les deux documents suivent le même plan :
+
+- Présentation des formats de données acceptés par les packages.
+- Exploration des jeux de données intégrés et méthodes de simulation.
+- Introduction des données "fil rouge" utilisées pour illustrer la suite du document.
+- Manipulation des données et sélection des séquences selon différents critères.
+- Description statistique et visualisation des séquences.
+- Construction de typologies (calcul des dissimilarités et algorithmes de clustering), incluant le cas multidimensionnel (*multichannel*).
+- Autres analyses (divergence, survie, test entre groupes, formatage pour autres analyses)
+- Autres possibilités (séquences d'événements et séquences d'intervalles).
+
+Nous traiterons dans ce document essentiellement de l'analyse de séquences d'**états**. Les autres types (événements et intervalles) seront spécifiquement abordés dans la dernière section.
+
+```{r setup, warning=FALSE, echo=FALSE, message=FALSE}
+library(TraMineR)
+library(TraMineRextras)
+# Autres librairies
+library(cluster)
+library(coxme)
+library(survival)
+library(nnet)
+library(mlogit)
+library(dplyr)
+```
+
+# Formats de données ###
+
+Six formats de données sont proposés par \texttt{TraMineR} : **STS** (*successive states*), **SPS** (*successive state-duration spells*), **SPELL** (*vertical id-start-end-spells*), **DSS** (*distinct successive states*), **SRS** (*shifted replicated sequences*), **TSE** (*time stamped events*) et **SS** (*successive states*). De son côté, \texttt{TraMineRextras} permet d'étendre ces possibilités avec deux formats supplémentaires : **FCE** (*fixed column event*) et **HSPELL** (*horizontal spells*).
+
+Prenons l'exemple de deux séquences $X$ et $Y$, où $a$, $b$ et $c$ représentent les états possibles (l'alphabet) :
+
+$$X = (a, a, a, b,b,c,c)\quad \text{et}\quad Y= (a, a, a, c,c,c,c)$$
+Ces différents formats apportent plus ou moins d'informations sur les durées et les dates des différents états :\
+
+```{r exemples-formats, echo=FALSE, message=FALSE}
+# Format STS
+donnees_sts <- data.frame(
+  T1 = c("a", "a"),
+  T2 = c("a", "a"),
+  T3 = c("a", "a"),
+  T4 = c("b", "c"),
+  T5 = c("b", "c"),
+  T6 = c("c", "c"),
+  T7 = c("c", "c"))
+row.names(donnees_sts) <- c("X", "Y")
+print("--- Format STS ---")
+print(donnees_sts)
+print(" ")
+
+# Format SPS
+seq_obj <- seqdef(donnees_sts) # Création de l'object séquence en TraMineR
+donnees_sps <- seqformat(seq_obj, from = "STS", to = "SPS")
+print("--- Format SPS ---")
+print(donnees_sps)
+print(" ")
+
+# Format SPELL
+donnees_spell <- seqformat(seq_obj, from = "STS", to = "SPELL")
+print("--- Format SPELL ---")
+print(donnees_spell)
+print(" ")
+
+# Format DSS
+donnees_dss <- seqformat(seq_obj, from = "STS", to = "DSS")
+print("--- Format DSS ---")
+print(donnees_dss)
+print(" ")
+
+# Format SRS
+donnees_srs <- seqformat(seq_obj, from = "STS", to = "SRS", nrep = 1)
+print("--- Format SRS ---")
+print(donnees_srs)
+print(" ")
+
+# Format TSE et matrice de transition
+mat_transition <- seqetm(seq_obj, method = "transition")
+donnees_tse <- seqformat(seq_obj, from = "STS", to = "TSE", 
+                         tevent = mat_transition)
+print("--- Matrice de transition ---")
+print(mat_transition)
+print(" ")
+print("--- Format TSE ---")
+print(donnees_tse)
+print(" ")
+
+# Format SS
+donnees_ss <- data.frame(
+  seq = c("a-a-a-b-b-c-c","a-a-a-c-c-c-c")
+)
+row.names(donnees_ss) <- c("X", "Y")
+print("--- Format SS ---")
+print(donnees_ss)
+print(" ")
+
+# Format FCE
+donnees_fce <- data.frame(
+  id = c("X","Y"),
+  a = c(1,1),
+  b = c(4,NA),
+  c = c(6,4)
+)
+print("--- Format FCE ---")
+print(donnees_fce)
+print(" ")
+
+# Format HSPELL
+donnees_hspell <- data.frame(
+  begin1 = c(1,1),
+  end1 = c(3,3),
+  status1 = c("a","a"),
+  begin2 = c(4,4),
+  end2 = c(5,7),
+  status2 = c("b","c"),
+  begin3 = c(6,NA),
+  end3 = c(7,NA),
+  status3 = c("c",NA)
+)
+row.names(donnees_hspell) <- c("X", "Y")
+print("--- Format HSPELL ---")
+print(donnees_hspell)
+```
+\
+Cependant, pour créer l'objet "séquence d'états" (*state sequence object*) indispensable à la réalisation des analyses, seuls les formats **STS**, **SPS** et **SPELL** sont acceptés.\
+
+```{r exemples-definition, message=FALSE}
+seq_obj_sts <- seqdef(donnees_sts, informat="STS")
+seq_obj_sps <- seqdef(donnees_sps, informat="SPS")
+seq_obj_spell <- seqdef(donnees_spell, informat="SPELL")
+seq_obj_ss <- seqdef(donnees_ss, 1)
+```
+
+Il est ensuite possible de passer d'un format à un autre à l'aide des fonctions de conversion \texttt{seqformat()}, \texttt{FCE\_to\_TSE()}, \texttt{TSE\_to\_STS()} et \texttt{HSPELL\_to\_STS()}. \texttt{TraMineRextras} permet également de convertir une séquences d'états au format **PersonPeriod** avec la fonction \texttt{toPersonPeriod()}.
+
+Enfin, il est important de noter que la définition des séquences au sein du package gère nativement la notion de pondération, permettant ainsi d'**appliquer des poids aux séquences** le cas échéant.
+
+# Données exemples proposées et simulations ###
+
+Le package \texttt{TraMineR} met à disposition plusieurs jeux de données pour illustrer ses fonctionnalités :
+
+| Jeu de données | Thématique | Format | Individus | Longueur | États | Covariables |
+|:---|:------|:---|--:|--:|--:|--:|
+| **`actcal`** | Statut d'emploi (Swiss Household Panel) | STS ou TSE | 2 000 | 12 | 4 | 11 |
+| **`biofam`** | Statut familial (Swiss Household Panel) | STS | 2 000 | 16 | 8 | 7 |
+| **`mvad`** | Transition école-travail | STS | 712 | 72 | 6 | 13 |
+| **`ex1`** | Pédagogique (données manquantes, poids) | STS | 7 | variable | 4 | - |
+| **`ex2`** | Pédagogique (avec ou sans poids) | SS | 100 ou 6 | variable | 4 | - |
+| **`famform`**| Historique familial | SS | 5 | variable | 5 | - |
+
+Aussi, il est important de noter que \texttt{TraMineR} ne propose pas de séquences comportant plusieurs domaines (multichannel).
+
+Le package offre également la possibilité de simuler des données grâce à la fonction \texttt{seqgen()}. Elle permet de générer $n$ séquences d'une taille donnée (\texttt{length}), en précisant l'\texttt{alphabet} souhaité et les probabilités associées à chaque élément.\
+
+```{r exemple-generation}
+# Exemple d'utilisation de la fonciton seqgen.
+set.seed(42)
+seqgen(n=3, length=8, alphabet = 1:3, p=c(0.2,0.1,0.7))
+```
+
+# Données fil-rouge ###
+Pour réaliser cette comparaison systématique, nous utilisons les mêmes jeux de données dans les trois environnements. Pour cela, nous nous appuyons sur le Swiss Household Panel (SHP), une étude longitudinale d'envergure nationale lancée en 1999 qui recueille annuellement des informations sociodémographiques et économiques auprès d'un échantillon représentatif de ménages suisses. Pour les analyses de séquences unidimensionnelles, nous nous appuyons sur le jeu de données *Family life states* (`biofam`), notamment proposé comme jeu de données exemple par `TraMineR` et `sequenzo`. Pour les analyses nécessitant des séquences multidimensionnelles avec plusieurs thématiques, nous travaillons à partir d'un extrait plus large du Swiss Household Panel (`extract_shp`) que nous avons sélectionné nous-mêmes. Nous décrivons plus en détail ces deux jeux-de données ci-après.
+
+##*Family life states* `biofam`
+Le jeu de données *Family life states* (`biofam`) est issu de l'enquête biographique rétrospective menée en 2002 dans le cadre du panel suisse de ménages. Il documente les trajectoires de formation familiale d'un échantillon de 2 000 individus sur une période de seize années, sans données manquantes, retraçant l'évolution de leur situation familiale de l'âge de 15 ans à l'âge de 30 ans.
+
+Ces séquences sont initialement structurées au format **STS** et donc sont directement exploitables par `TraMineR`. Une version convertie au format **SPELL** est utilisée pour `TanaT`. L'alphabet des séquences décrites dans ce jeu de données est composé de huit statuts familiaux décrivant à la fois le lieu de résidence, le statut marital et la parentalité. Les individus sont ainsi catégorisés à chaque pas de temps selon qu'ils vivent au domicile parental (*Parent*), qu'ils l'ont quitté (*Left*), qu'ils ont un enfant (*Child*), qu'ils sont mariés (*Married*) qu'ils ont quitté le domicile familial et qu'ils sont mariés (*Left+Marr*), qu'ils ont quitté le domicile familial et ont un enfant (*Left+Child*), qu'ils soient hors du domicile familial, mariés et avec un enfant (*Left+Marr+Child*) ou qu'ils soient divorcés (*Divorced*).
+
+En complément de la séquence d'états, le jeu de données inclut plusieurs covariables transversales: caractéristiques socio-démographiques de l'individu (sexe, année de naissance, première nationalité, langue de réponse au questionnaire) et culturelles (religion et participation religieuse), ainsi que sur l'origine sociale avec le statut social du père et de la mère. Cependant, certaines de ces variables sont manquantes chez certains individus. Nous utilisons uniquement la variable sexe (disponible pour l'ensemble des individus) dans nos comparaisons.
+
+Enfin, ce jeu de données propose deux sets de poids : l'un ajusté sur l'ensemble de la population suisse et l'autre ramené à la taille de l'échantillon. Cependant, ils ne sont fournis qu'à titre illustratif, puisque ce jeu de données est un sous-échantillon des réponses globales du panel et donc les poids proposés ne sont plus adaptés.
+
+## Extrait du Swiss Household Panel `extract_shp`
+Le jeu de données `extract_shp` est un extrait des réponses à l'enquête longitudinale menée auprès d'un panel de ménages suisses entre 1999 et 2018 inclus. Nous avons sélectionné uniquement les ménages sans données manquantes et ayant participé à l'enquête chaque année, nous avons ainsi 20 observations de 1032 foyers. Trois thématiques ont été constituées, chacune regroupant une à trois variables évoluant au fil du temps, pour un total de six variables retenues.
+
+**Thématique familiale :**
+Pour cette thématique, nous considérons uniquement le nombre de personnes composant le ménage. Cette variable prend des valeurs allant de 1 à 12, que nous regroupons en cinq catégories : 1, 2, 3, 4, et 5 habitants ou plus au sein du foyer.
+
+**Thématique résidentielle :**
+Cette thématique regroupe trois variables : la région d'habitation, le type de commune d'habitation et le statut résidentiel. La région d'habitation comporte sept modalités, les acronymes des cantons correspondants sont indiqués entre parenthèses : Lac Léman (VD, VS, GE), Middleland (BE, FR, SO, NE, JU), Suisse Nord-Ouest (BS, BL, AG), Zurich, Suisse Est (GL, SH, AR, AI, SG, GR, TG), Suisse Centrale (LU, UR, SZ, OW, NW, ZG) et Tessin.
+Le type de commune d'habitation comporte quant à lui neuf modalités : centres, communes de banlieue, communes aisées, communes urbaines périphériques, communes touristiques, communes industrielles et tertiaires, communes rurales de banlieue, communes mixtes agricoles et communes agricoles périphériques.
+Le statut résidentiel se décline enfin en trois modalités : locataire, propriétaire ou copropriétaire, et logé à titre gratuit.
+
+**Thématique qualité de vie :**
+Cette thématique comprend deux variables : l'état du lieu de vie du foyer et la satisfaction à l'égard de la situation financière du foyer. La première comporte trois modalités : en mauvais état, en bon état mais n'ayant pas été rénové récemment, et neuf ou récemment rénové.
+La seconde est à l'origine mesurée sur une échelle entière de 0 (pas du tout satisfait) à 10 (totalement satisfait), et est regroupée en cinq catégories : 0-2, 3-4, 5-6, 7-8 et 9-10.
+
+Cette base de données est proposée au format **LONG**, qui n'est directement compatible avec aucun des trois packages. Une vesion au format **STS** est utilisée pour `TraMineR`.
+
+
+Les variables retenues et les regroupements de modalités opérés pour ce comparatif ont été choisis arbitrairement dans le seul but d'illustrer les fonctionnalités des trois packages étudiés. Ce document n'a pas vocation à produire une analyse substantielle, et ces choix ne sauraient constituer une démarche pertinente dans un contexte applicatif réel.
+
+```{r load-data}
+# Téléchargement de biofam
+data(biofam)
+
+# Téléchargement des données SHP extraites
+extract_shp <- read.csv("C:/Users/malnoeg/Documents/Stage_M2_SequenceAnalysis/Protocole/Code/data_SHP_sts.csv")
+shp_region <- extract_shp[c(2,3:22)]
+shp_com2 <- extract_shp[c(2,23:42)]
+shp_hh29 <- extract_shp[c(2,43:62)]
+shp_nbpers <- extract_shp[c(2,63:82)]
+shp_hh14 <- extract_shp[c(2,83:102)]
+shp_hi30 <- extract_shp[c(2,103:122)]
+```
+
+
+# Gestion des données ###
+Pour l'analyse de séquence il peut se réveler très utile de filtrer et sélectionner des séquences sur certains critères comme la sélection d'un échantillon ou le respect d'une contrainte de temporelle. La librairie Python \texttt{TanaT} sépare le filtrage et la sélection des données en plusieurs catégories :
+
+- **Query** : sélection par requête sur les états (ex. : présence de l'état A).
+- **Static** : filtrage via les covariables des individus (ex. : sélection par genre).
+- **Time** : restriction temporelle ou sélection sur une fenêtre de temps donnée (ex. : trajectoires entre 2001 et 2005).
+- **Pattern** : recherche de motifs séquentiels précis (ex. : état A → état B → état D).
+- **Length** : filtrage selon la longueur des séquences (ex. : taille strictement supérieure à 5).
+
+Nous allons illuster ces différents filtrages par des exemples sur le jeu de données \texttt{biofam}.
+
+Nous commençons tout d'abord par définir l'objet séquence avec la fonction \texttt{seqdef()} :\
+
+```{r def-biofam, message=FALSE}
+# Définition de l'objet séquence TraMineR
+biofam.alphabet <- c(0,1,2,3,4,5,6,7)
+biofam.labels <- c("Parent","Left","Married",
+                   "Left+Marr","Child","Left+Child",
+                   "Left+Marr+Child","Divorced")
+biofam.scode <- c("P", "L", "M", "LM", "C","LC","LMC","D")
+biofam.seq <- seqdef(biofam,
+                     var = 10:25,
+                     alphabet = biofam.alphabet, 
+                     states = biofam.scode, 
+                     labels = biofam.labels)
+head(biofam.seq, 5)
+```
+
+## Query ###
+\underline{Exemple :} ne sélectionner que les séquences passant au moins une fois par l'état "L" (Left) au cours du temps.\
+
+```{r query}
+indexL <- rowSums(biofam.seq == "L", na.rm = TRUE) > 0
+head(biofam.seq[indexL, ], 5)
+```
+
+## Static ###
+\underline{Exemple :} sélection des personnes nées strictement après 1950.\
+
+```{r static}
+index1950 <- biofam["birthyr"]>1950
+head(biofam.seq[index1950, ], 5)
+```
+
+## Time ###
+\underline{Exemple :} sélectionner les séquences comprises (en entiereté) entre le temps 1 et le temps 8.\
+
+```{r time}
+longueurs <- seqlength(biofam.seq[2:16])
+head(biofam.seq[longueurs <= 8, 2:16], 5)
+```
+
+Dans \texttt{biofam}, toutes les séquences sont de taille 16, nous obtenons donc un objet séquence vide.
+
+## Pattern ###
+\underline{Exemple :} présence du pattern Parent -> Left + Married.\
+
+```{r pattern}
+seq_texte <- seqconc(biofam.seq)
+indexPattern <- grepl("P-LM-", seq_texte)
+head(biofam.seq[indexPattern, ], 5)
+```
+
+## Length ###
+\underline{Exemple :} sélection des séquences de longueur strictement supérieure à 10.\
+
+```{r length}
+longueurs <- seqlength(biofam.seq)
+head(biofam.seq[longueurs > 10, ], 5)
+```
+
+
+## Changement de granularité ###
+Dans le même esprit de préparation des données, il est parfois utile de procéder à un **changement de granularité**, par exemple dans un contexte où les différents individus n'auraient pas répondu à la même fréquence mais que l'on souhaite les étudier ensemble.
+
+\underline{Exemple :} aggrégation des états 4 par 4, au lieu de 16 états en choisissant l'état le plus fréquent.\
+
+```{r changement-granularite}
+head(seqgranularity(biofam.seq, tspan = 4, method = "mostfreq"), 5)
+```
+
+# Descriptions des séquences et visualisations ###
+Le package \texttt{TraMineR} met à disposition un évantail d'outils statistiques et graphiques pour explorer les trajectoires de manière globale ainsi que pour chaque séquence individuelle.
+
+## Alphabet ###
+L'alphabet qui décrit les séquences s'obtient via la fonciton \texttt{alphabet()}.
+```{r alphabet, cache=TRUE}
+alphabet(biofam.seq)
+```
+
+## Visualisation des séquences ###
+L'observation brute des trajectoires s'effectue via \texttt{seqiplot()}, qui est adaptée pour la visualisation détaillée de quelques séquences. Pour les échantillons de taille plus grande, \texttt{seqIplot()} est privilégié et est principalement utile pour l'observation de tendances globales plutôt que la distinction de chaque cas individuel.\
+
+```{r visu-sequences, fig.width=9, fig.height=4.5, fig.cap="Visualisation des séquences 10 à 20 du jeu de données biofam"}
+# Visualisation de l'ensemble des séquences (quelques indices)
+seqiplot(biofam.seq, idx = 10:20,
+         with.legend = "right", cex.axis=0.7, cex.legend=1)
+```
+
+```{r visu-sequences-global, fig.width=9, fig.height=4.5, fig.cap="Visualisation de l'ensemble des séquences du jeu de données biofam"}
+# Visualisation de l'ensemble des séquences (global)
+seqIplot(biofam.seq, border = NA,
+         with.legend = "right", cex.axis=0.8, cex.legend=1)
+```
+
+## Fréquences des séquences ###
+L'identification des séquences les plus fréquentes est gérée par la fonction \texttt{seqtab()} et peut être illustrée par la fonction \texttt{seqfplot()} avec les fréquences cumulées.\
+
+```{r frequences, fig.width=10, fig.height=5, fig.cap="Fréquences cumulatives des séquences de biofam"}
+# Fréquences des séquences et visualisation
+head(seqtab(biofam.seq), 3)
+seqfplot(biofam.seq, with.legend = "right", cex.axis=0.8, cex.legend=1)
+```
+
+## Fréquences des états co-occurents ###
+L'identification des combinaisons d'états co-occurents les plus fréquents au sein des séquences est réalisé via la fonction \texttt{seqtabstocc()}.
+
+```{r etats-co-occurents, cache=TRUE}
+seqtabstocc(biofam.seq)
+```
+
+
+
+## Séquence représentative ###
+Dans la même logique, la séquence modale (la séquence la plus représentative) s'extrait via \texttt{seqmodst()} et peut-être visualisée avec \texttt{seqmsplot()}.\
+
+```{r seq-representative, fig.width=10, fig.height=5, fig.cap="Séquence représentative de biofam"}
+# Séquence représentative
+seqmodst(biofam.seq)
+seqmsplot(biofam.seq, with.legend = "right", cex.axis=0.8, cex.legend=1)
+```
+
+## Temps moyen dans chaque état ###
+Pour analyser les durées moyennes passées dans chaque état, La fonction \texttt{seqmeant()} permet d'obtenir les durées moyennes passées dans chaque état et son résultat est illustré dans un barplot avec \texttt{seqmtplot()}.\
+
+```{r temps-moyen-etat, fig.width=10, fig.height=5, fig.cap="Barplot du temps moyen passé dans chaque état"}
+# Temps moyen dans chaque état
+seqmeant(biofam.seq)
+seqmtplot(biofam.seq, border = NA, 
+          with.legend = "right", cex.axis=0.8, cex.legend=1)
+```
+
+## Tableau des transitions ###
+Pour l'analyse des dynamiques de transitions entre les états, le package propose la fonction \texttt{seqtrate()} qui renvoie la matrice des transitions.\
+
+```{r tab-transition, message=FALSE, fig.width=10, fig.height=5}
+# Tableau des transitions
+round(seqtrate(biofam.seq), 3)
+```
+
+## Distribution transversale ###
+Une illustration de l'évolution des distributions transversale (chronogramme) est proposé par les fonctions \texttt{seqstatd()} et la fonction \texttt{seqdplot()}.\
+
+```{r distribution-transversale,}
+# Distribution transversale
+distribution_transversale <- seqstatd(biofam.seq)$Frequencies
+head(round(distribution_transversale, 2), 3)
+```
+
+```{r, fig.width=10, fig.height=5, fig.cap="Chronograme des séquences de biofam"}
+seqdplot(biofam.seq, with.legend = "right", cex.axis=0.8)
+```
+
+
+## Entropie transversale ###
+L'évolution temporelle de l'hétérogénéité des états de l'échantillon peut être mesurée par l'entropie transversale avec \texttt{seqHtplot()}, qu'il est possible de superposer au chronogramme grâce à la fonction \texttt{seqHplot()}.\
+
+```{r entropie-transversale, fig.width=10, fig.height=5, fig.cap="Entropie transversale de biofam"}
+# Fonction entropie
+seqHtplot(biofam.seq,cex.axis=0.8)
+```
+
+```{r entropie-transversale2, fig.width=10, fig.height=5, fig.cap="Entropie transversale superposée au chronogramme de biofam"}
+# Fonction entropie superposée au graphe de distribution
+seqdHplot(biofam.seq, with.legend = "right",cex.axis=0.8) 
+```
+
+## Descripteurs individuels ###
+Au niveau individuel, plusieurs descripteurs sont à disposition pour décrire chaque séquence selon différents aspects : le nombre de sous-séquences qui la compose (\texttt{seqsubsn()}), sa longueur (\texttt{seqlength()}), les états distincts qui la compose (\texttt{seqdss()}), son entropie propre (\texttt{seqient()}), sa complexité (\texttt{seqici()}), sa turbulence (\texttt{seqST()}),  sa volatilité (\texttt{seqivolatility()}), un indicateur de la proportion d'états positifs ou négatifs selon des listes passées en argument (\texttt{seqipos()}), son potentiel intégratif (\texttt{seqintegr()}), sa badness (\texttt{seqibad()}), sa degradation (\texttt{seqidegrad()}), sa précarité (\texttt{seqprecarity()}) et son insécurité (\texttt{seqinsecurity()}).\
+
+```{r description-ind,  cache=TRUE, results='hide', message=FALSE}
+# Descripteurs individuels
+head(seqsubsn(biofam.seq), 5) # nombre de sous-séquences
+head(seqlength(biofam.seq),5) # longueur
+head(seqdss(biofam.seq), 5) # états disctincts
+head(seqient(biofam.seq), 5) # entropie within
+head(seqici(biofam.seq), 5) # complexity
+head(seqST(biofam.seq), 5) # turbulence
+head(seqivolatility(biofam.seq), 5) # Volatilité
+head(seqipos(biofam.seq,
+             pos.states = c("P","L","LM","LC","LMC","M","C"),
+             neg.states=c("D")),5) # Post-Negative
+head(seqintegr(biofam.seq), 5) # Integration
+head(seqibad(biofam.seq), 5) # Badness
+head(seqidegrad(biofam.seq), 5) # Degradation
+head(seqprecarity(biofam.seq), 5) # Precarité
+head(seqinsecurity(biofam.seq), 5) # Insecurité
+```
+
+## Paramètres de visualisations ###
+Pour l'ensemble des visualisations, il est possible de préciser en argument \texttt{group=...} pour obtenir des visualisations différentes pour chaque facteur d'une variable catégorielle.\
+
+```{r visu-group, fig.width=9, fig.height=4, fig.cap="Chronogramme des séquences en fonction du sexe"}
+seqIplot(biofam.seq, group=biofam$sex, border = NA, 
+          with.legend = "right", cex.axis=0.8, cex.legend=1.7, cex.lab=1.7)
+```
+
+Il est également possible de prendre en compte les poids de sondage du jeu de données s'ils sont précisés en modifiant l'épaisseur des séquences pour les visualisations et en les prennant en compte pour les statistiques.\
+
+```{r visu-poids, message=FALSE, fig.width=10, fig.height=5, fig.cap="Visualisation des séquences 10 à 20, épaisseur selon le poids de la séquence dans le jeu de données"}
+biofam.seq_w <- seqdef(biofam,
+                     var = 10:25,
+                     alphabet = biofam.alphabet, 
+                     states = biofam.scode, 
+                     labels = biofam.labels,
+                     weights = biofam$wp00tbgs)
+seqiplot(biofam.seq_w, idx = 10:20, with.legend = "right", cex.axis=0.7)
+```
+
+Enfin, l'ensemble de ces statistiques et visualisations peuvent être paramétré pour afficher des labels ou des couleurs spécifiques (\texttt{cpal()}).
+
+# Obtention de typologie par l'analyse de séquences ###
+
+L'une des applications majeure de l'analyse de séquence est la construction de typologie : le regroupement des séquences partageant des propriétés similaires. L'identification de ces profils types permet ensuite de travailler avec des covariables afin d'expliquer la formation de ces différents groupes.
+
+La construction de ces typologies se fait en deux étapes : l'évaluation des écarts entre chaque paire de séquences qui fournit une matrice de (di)similairités, puis l'application d'un algorithme de classification (clustering) sur cette matrice afin de former des groupes d'individus similaires (ou peu dissimilaires). 
+
+Pour chacune de ces étapes, le package \texttt{TraMineR} propose plusieurs possbilités que nous allons illustrer sur le jeu de données \texttt{biofam}.
+
+## Calcul des dissimilarités ###
+Pour la première étape de ce processus, avec la fonction \texttt{seqdist()}, \texttt{TraMineR} offre un large éventail de métriques permettant de quantifier les différences entre les séquences, et sur plusieurs aspects :
+
+- Distances d'édition : OM, OMlo, OMslen, OMspell, OMstran, Hamming, Dynamic Hamming et TWED.
+- Mesures basées sur le nombres d'attributs communs : Longuest Common Subsequence (LCS), Longest Common Prefix (LCP), Longuest Common Suffix (RLCP), Number of Matching Subsequences (NMS) et NMSMSTet SVRspell.
+- Distances entre les distributions d'états : Euclide et $\chi^2$ (CHI2)
+
+Pour notre jeu de données, nous faisons le choix d'appliquer l'algorithme d'Optimal Matching (OM).\
+
+```{r dissimilarite, message = FALSE}
+biofam.om <- seqdist(biofam.seq, method = "OM", indel=1, sm = "CONSTANT")
+```
+```{r temps-dissimilarité, echo=FALSE, message=FALSE}
+start.time <- Sys.time()
+biofam.om <- seqdist(biofam.seq, method = "OM", indel=1, sm = "CONSTANT")
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print(paste(round(time.taken,3)," s"))
+```
+
+## Clustering ###
+Une fois la matrice de dissimilarités calculée, la seconde étape consiste à regrouper les trajectoires similaires au moyen d'un algorithme de clustering. Néanmoins, \texttt{TraMineR} ne met pas à disposition d'algorithme de clustering mais propose de faire appel aux algorithmes déjà implémentés en R, notamment au travers du package \texttt{cluster}. Celui ci propose, entre autres, les algorithmes suivants :
+
+- Clustering Large Application (CLARA)
+- Partitioning Around Medoids (PAM)
+- hierarchical clustering (agglomerative nesting, AGNES)
+- Fuzzy ANalYsis clustering (FANNY). 
+
+Le package \texttt{TraMineR} est compatible avec tout algorithme qui se base sur une matrice de dissimilarité et renvoie un vecteur contenant le cluster de chaque séquence, ainsi il est possible d'utiliser d'autres packages ou de coder son propre algorithme.
+
+Pour notre jeu de données, nous choisissons d'appliquer un algorithme de clustering hiérarchique en retenant 2 clusters.\
+
+```{r clustering, cache=TRUE}
+clusterward <- agnes(biofam.om, diss = TRUE, method = "ward")
+nb_clust <- 2
+biofam.clust <- cutree(clusterward, k=nb_clust)
+clust.lab <- factor(biofam.clust, labels = paste("Cluster",1:nb_clust))
+```
+
+```{r time-clustering, cache=TRUE, echo=FALSE}
+start.time <- Sys.time()
+clusterward <- agnes(biofam.om, diss = TRUE, method = "complete")
+nb_clust <- 2
+biofam.clust <- cutree(clusterward, k=nb_clust)
+clust.lab <- factor(biofam.clust, labels = paste("Cluster",1:nb_clust))
+print(paste(round(time.taken,3)," s"))
+```
+
+
+```{r visu-cluster, cache=TRUE, fig.width=15, fig.height=5, fig.cap="Chronogramme selon le cluster"}
+seqdplot(biofam.seq, group = clust.lab, border = NA, 
+         with.legend = "right", cex.legend=2)
+```
+
+```{r visu-cluster2, cache=TRUE, fig.width=15, fig.height=5, fig.cap="Visualisation de l'ensemble des séquences selon le cluster"}
+seqIplot(biofam.seq, group = clust.lab, border = NA, with.legend = "right", cex.legend=2)
+```
+
+Les outils de visualisations selon un groupe directement intégré dans les foncitons de visualisation de \texttt{TraMineR} sont très utiles pour pouvoir facilement visualiser les résultats de l'analyse des typologies et de voir aisément sur quelles propriétés les typologies se différencient.
+
+## Cas multidimensionnel (multichannel) ###
+L'analyse de séquences ne se limite pas qu'au cas unidimensionnel et peut également être intéressante à appliquer dans un contexte multidimensionnel comme celui du modèle \textsf{SaLTo} présenté en introduction. Le processus analytique dans le cadre multidimensionnel reste sensiblement le même : il s'agit toujours de définir des séquences à partir d'un certain alphabet d'états, de choisir le coût du passage d'un état à un autre, de calculer la dissimilarité entre les séquences et d'appliquer un algorithme de clustering pour obtenir des groupements de séquences similaires. L'enjeu devient alors de choisir le moment auquel considérer l'aspect multidimensionnel. Quatre approches sont distinguées dans la littérature : l'extension de l'alphabet (EA, *Extended Alphabet*), l'association des matrices de coût (CAT, *Cost Additive Trick*), l'association des matrices de dissimilarité (DAT, *Distance Additive Trick*) et la combinaison des clusters (CombT, *Combining Trajectories*) qui sont toutes implémentables en R avec \texttt{TraMineR}.
+
+### Extended Alphabet ###
+```{r ea, cache = TRUE, message = FALSE}
+start.time <- Sys.time()
+# Construction d'un jeu de données avec l'alphabet combiné
+  # Initiatilisation du jeu de données final
+combined_data <- data.frame(idhous = shp_region$idhous)
+ # Pour chaque année, on extrait la valeur de chaque variable
+for (i in 1:18) {
+  v1 <- shp_region[, i + 1]
+  v2 <- shp_com2[, i + 1]
+  v3 <- shp_hh29[, i + 1]
+  v4 <- shp_nbpers[, i + 1]
+  v5 <- shp_hh14[, i + 1]
+  # Combinaison et sauvegarde dans le jeu de données final
+  combined_data[, paste0("T", i)] <- paste(v1, v2, v3, v4, v5, sep = "/")
+}
+# Définition de l'alphabet et de l'objet STS
+alphabet_extended <- sort(unique(as.vector(as.matrix(combined_data[, -1]))))
+shp.ea <- seqdef(combined_data[, -1], 
+                       alphabet = alphabet_extended, 
+                       id = combined_data$idhous)
+EA_distance <- seqdist(shp.ea, method = "OM", indel=1, sm = "CONSTANT")
+
+# Clustering avec le package cluster
+clusterward <- agnes(EA_distance, diss = TRUE, method = "complete")
+nb_clust <- 4
+cat.clust <- cutree(clusterward, k=nb_clust)
+clust.lab <- factor(cat.clust, labels = paste("Cluster",1:nb_clust))
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print(paste(time.taken," s"))
+```
+
+
+### Cost Additive Trick ###
+```{r cat, cache = TRUE, message=FALSE}
+start.time <- Sys.time()
+# Création des objets de séquence pour chaque variable
+seq_v1 <- seqdef(shp_region[, -1])
+seq_v2 <- seqdef(shp_com2[, -1])
+seq_v3 <- seqdef(shp_hh29[, -1])
+seq_v4 <- seqdef(shp_nbpers[, -1])
+seq_v5 <- seqdef(shp_hh14[, -1])
+
+# Calcul sur plusieurs canaux
+channels <- list(seq_v1, seq_v2, seq_v3, seq_v4,seq_v5)
+CAT_distance <- seqMD(channels, 
+                      method="OM", 
+                      sm =list("CONSTANT","CONSTANT",
+                               "CONSTANT","CONSTANT", "CONSTANT"), 
+                      what="diss")
+
+# Clustering
+clusterward <- agnes(CAT_distance, diss = TRUE, method = "complete")
+nb_clust <- 4
+cat.clust <- cutree(clusterward, k=nb_clust)
+clust.lab <- factor(cat.clust, labels = paste("Cluster",1:nb_clust))
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print(paste(time.taken," s"))
+```
+
+### Distance Additive Trick ###
+```{r dat, cache = TRUE, message=FALSE}
+start.time <- Sys.time()
+# Définition des objets de séquence (si non fait)
+seq_v1 <- seqdef(shp_region[, -1])
+seq_v2 <- seqdef(shp_com2[, -1])
+seq_v3 <- seqdef(shp_hh29[, -1])
+seq_v4 <- seqdef(shp_nbpers[, -1])
+seq_v5 <- seqdef(shp_hi30[, -1])
+
+# Calcul des matrices de distances (ex: Optimal Matching)
+# On peut utiliser des méthodes ou des coûts de substitution différents par canal
+dist1 <- seqdist(seq_v1, method = "OM", sm = "CONSTANT")
+dist2 <- seqdist(seq_v2, method = "OM", sm = "CONSTANT")
+dist3 <- seqdist(seq_v3, method = "OM", sm = "CONSTANT")
+dist4 <- seqdist(seq_v4, method = "OM", sm = "CONSTANT")
+dist5 <- seqdist(seq_v5, method = "OM", sm = "CONSTANT")
+
+# Combinaison des deux distance
+weights <- c(1,1,1,1,1)
+DAT_distance <- weights[1]* dist1 + weights[2]* dist2 +
+  weights[3]* dist3 + weights[4]* dist4 +
+  weights[5]* dist5
+
+# CLuster
+library("cluster")
+clusterward <- agnes(DAT_distance, diss = TRUE, method = "complete")
+nb_clust <- 4
+cat.clust <- cutree(clusterward, k=nb_clust)
+clust.lab <- factor(cat.clust, labels = paste("Cluster",1:nb_clust))
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+print(paste(time.taken," s"))
+```
+
+### Combinin Trajectories ###
+```{r combt, cache = TRUE, message=FALSE}
+start.time <- Sys.time()
+# Liste pour stocker les labels de clusters
+cluster_labels <- list()
+# Création des objets de séquence pour chaque variable
+seq_v1 <- seqdef(shp_region[, -1])
+seq_v2 <- seqdef(shp_com2[, -1])
+seq_v3 <- seqdef(shp_hh29[, -1])
+seq_v4 <- seqdef(shp_nbpers[, -1])
+seq_v5 <- seqdef(shp_hh14[, -1])
+seq_list = list(seq_v1,seq_v2,seq_v3,seq_v4,seq_v5)
+# Exemple de boucle pour traiter chaque canal (en supposant 5 variables)
+for (i in 1:5) {
+  # 1. Calcul de la distance pour le canal i
+  d_matrix <- seqdist(seq_list[[i]], method = "OM", sm = "TRATE")
+  # 2. Clustering (Ward)
+  clusterward <- agnes(DAT_distance, diss = TRUE, method = "complete")
+  # 3. Découpage en k groupes (le nombre k peut varier selon le canal)
+  # Ici, nous fixons k=4 par défaut à titre d'exemple pour tous les canaux
+  nb_clust <- 4
+  cluster_labels[[i]] <- cutree(clusterward, k=nb_clust)
+}
+
+# Combinaison des 5 clusters pour former des sous-clusters croisés
+# Fusion des labels en une chaîne de caractères unique par individu
+clust.lab_global <- paste(cluster_labels[[1]], 
+                          cluster_labels[[2]], 
+                          cluster_labels[[3]], 
+                          cluster_labels[[4]], 
+                          cluster_labels[[5]], 
+                          sep = "_")
+# Conversion en facteur pour analyse ultérieure
+combined_factor <- as.factor(clust.lab_global)
+time.taken <- Sys.time() - start.time
+print(paste(time.taken," s"))
+```
+
+### Commentaire sur l'implémentation proposée ###
+
+Il faut toutefois souligner une limite pratique quant à l'implémentation avec \texttt{TraMineR} des analyses multidimensionnel. Si les objets du packages permettent de réaliser ces analyses, le package ne dispose pas nativement d'une classe d'objet unifiée permettant de modéliser globalement une trajectoire avec plusieurs cannaux. En l'absence d'une fonction centralisatrice, l'utilisateur doit jongler lui-même entre les différents cannaux et matrices, ce qui est envisageable pour un nombre restreint de cannaux, mais moins lorsque leur nombre augmente fortement.
+
+# Autres analyses ###
+Outre l'exploration des typologie au sein des séquences, \texttt{TraMineR} propose d'autres méthodes d'analyses comme l'analyse des divergences (*discrepancy analysis*), des tests de comparaisons des séquences entre différentes sous-populations ainsi que de l'analyse de survie. 
+
+Nous allons illustrer l'implémentation de ces possibilités avec le jeu de données \texttt{biofam}.
+
+## Analyse des divergences ###
+Le package \texttt{TraMineR} permet de mesurer la divergence d'une ensemble de séquence à partir de la matrice de dissimilarité avec \texttt{dissvar()}.\
+
+```{r compute discrepancy, cache=TRUE}
+# Compute the discepancy
+dissvar(biofam.om)
+```
+Egalement, il est possible de réaliser une analyse de la divergence selon une variable catégorielle et de tester statistiquement l'association entre la variable sélectionnée et la matrice de dissimilarités avec la fonction \texttt{dissassoc()} pour un point de vue global et \texttt{seqdiff()} pour une analyse à chaque pas de temps. Nous l'illustrons avec la variable sexe du jeu de données \texttt{biofam}.\
+
+```{r discrepancy, cache=TRUE, fig.width=15, fig.height=5}
+# Explication avec une seule variable / groupement
+# Statistiques et p-values (Pseudo F, Pseudo Fbf, Pseudo R2, Bartlett, and Levene))
+da <- dissassoc(biofam.om, group=biofam$sex, R=5000)
+print(da$stat)
+# Evolution des statistiques dans le temps
+Gdiff <- seqdiff(biofam.seq, 
+                 group = biofam$sex, 
+                 seqdist.args = list(method = "OM", indel = 1, sm = "TRATE"))
+title <- "Evolution of the pseudo R2 and L"
+plot(Gdiff, stat = c("Pseudo R2", "Levene"), 
+     lwd = 2, main = title, legend.pos = "topright")
+# Evolution de la divergence au sein des groupes dans le temps
+title <- "Evolution of within-group and overall discrepancies"
+plot(Gdiff, stat = c("discrepancy"), 
+     lwd = 2, main = title, legend.pos = "topright")
+```
+
+Enfin, il est possible de construire un arbre de divergence (*discrepancy tree*) avec la fonction \texttt{seqtree()} qui applique un algorithme récursif permettant d'identifier automatiquement, parmi les covariables, lesquelles discrimines le plus le parcours aboutissant à un arbre de décision. Le package propose également la possibilité de visualiser l'arbre obtenu avec GraphViz et la fonction \texttt{seqtreedisplay()}.\
+
+```{r discrepancy-tree, cache=TRUE, message=FALSE}
+# Plusieurs variables, arbre de régression
+st <- seqtree(biofam.seq ~ sex + birthyr, data = biofam,
+    R = 5000, diss = biofam.om, pval = 0.05)
+seqtreedisplay(st, type = "d", border = NA, showtree=FALSE,  filename="C:/Users/malnoeg/Documents/Stage_M2_SequenceAnalysis/Protocole/Code/TraMineR/discrepancy.png")
+```
+
+![Arbre de divergence](C:/Users\malnoeg\Documents\Stage_M2_SequenceAnalysis\Protocole\Code\TraMineR\discrepancy.png){#id .class width=90% height=45%}
+
+## Analyse entre groupes ###
+La fonction \texttt{seqComp()} permet de réaliser un test de rapport de vraisemblance et de calculer la différence du BIC (*Bayesian Information Criterion*) entre deux sous-groupes de séquences. Nous l'illustrons avec la variable \texttt{sexe} du jeu de données \texttt{biofam}.\
+
+```{r test-groupes-BIC-likelihood, cache=TRUE}
+# Séparation entre homme et femme
+indexSex <- biofam["sex"]=="man"
+biofam_man.seq <- biofam.seq[indexSex, ]
+biofam_woman.seq <- biofam.seq[-indexSex,]
+# BIC and Likelihood ratio test for comparing two groups
+seqCompare(biofam_man.seq, biofam_woman.seq, method = "OM", indel=1, sm = "TRATE")
+```
+
+## Analyse de survie ###
+Le package \texttt{TraMineR} permet, via la fonction \texttt{seqsurv()}, de construire un objet de type \texttt{survfit} (issu du package \texttt{survival}) à partir de séquences d'états. Cet objet permet ensuite de travailler sur l’évolution de la probabilité de survenue des différents états, et la fonction \texttt{seqsplot()} permet de visualiser les fonctions de survie pour l’ensemble des individus ou conditionnellement à une variable catégorielle.\
+
+```{r survie, cache=TRUE, fig.width=15, fig.height=7, fig.cap="Probabilité de survenue des états selon le sexe"}
+seqsurv(biofam.seq)
+seqsplot(biofam.seq,group=biofam$sex)
+```
+
+L'objet \texttt{survfit} créé est directement compatible avec le package \texttt{suvival} qui permet par la suite de réaliser des analyses et de construire des modèles, comme par exemple un modèle de Cox.
+
+## Reformatage pour analyses des transitions et des sous-séquences (CTA, SAMM, SHA) ###
+Les packages \texttt{TraMineR} et \texttt{TraMineRextras} ne permettent pas de réaliser directement certaines autres analyses classiques, telles que l’analyse des risques concurrents ou les modèles multi-états appliqués aux séquences. Ils proposent en revanche des fonctions de transformation des objets de séquences d’états vers des formats directement compatibles avec d’autres packages, facilitant ainsi la mise en œuvre de ces analyses.
+
+### Analyse des risques concurrents (*Competing Trajectory Analysis*) ###
+Le package \texttt{TraMineRextras} propose, au travers de la fonction \texttt{seqcta()}, de convertir un objet de séquences dans un format adapté à la réalisation d’une analyse des risques concurrents (*Competing Trajectory Analysis*). Les données ainsi obtenues peuvent ensuite être exploitées à l’aide des packages \texttt{survival}, \texttt{cluster}, \texttt{mlogit} et \texttt{nnet} pour réaliser l'analyse des risques concurrents.\
+
+```{r cta, cache=TRUE, message=FALSE}
+# Conversion format par rapport à l'état initial "P" = vivre chez ses parents
+# en regardant les 5 états suivants
+cta <- seqcta(biofam.seq, subseq=5, initial.state="P", 
+              covar=biofam[, c("sex", "birthyr")])
+head(cta,13)
+# Réalisation d'une analyse des risques concurrents via autres packages
+## Typologies des trajectoires après avoir quitté le domicile familial
+clusterTraj <- seqdef(cta[cta$event, 5:9])
+diss <- seqdist(clusterTraj, method="HAM")
+pclust <- pam(diss, diss=TRUE, k=5, cluster.only=TRUE)
+pclustname <- paste("Type", pclust)
+## Modèle Logit pour expliquer les trajectoires selon
+## covariables sexe et année de naissance
+cta$traj.event <- "No event"
+cta$traj.event[cta$event] <- pclustname
+summary(mlogit(traj.event~1|time+sex, data=cta, shape="wide", reflevel="No event"))
+```
+
+
+### Analyse de séquences par modèle multi-états (*Sequence Analysis Multistate Model*) ###
+De la même manière, le package propose également la conversion des données dans un format adapté à la réalisation d'analyse de séquences par des modèles multi-états (*Sequence Analysis Multistate Model*, SAMM) avec les packages \texttt{survival}, \texttt{cluster}, \texttt{coxme} et \texttt{nnet}.\
+
+```{r samm, cache=TRUE, message=FALSE, fig.height=7, fig.width=10, fig.cap="Chronogramme sous-séquences de longueur 5 à la sortie des états de biofam"}
+# Conversion format pour SAMM en regardant les 5 états suivants
+## Extraction de toutes les sous-séquences de taille 5
+biofam.samm <- seqsamm(biofam.seq, sublength=5, covar=biofam[, c("sex", "birthyr")])
+head(biofam.samm, 5)
+## Choronogramme à la sortie de chaque état
+plot(biofam.samm)
+## Objet séquence pour les sous-séquences en sortie de l'état "L"
+Pseq <- seqsammseq(biofam.samm, "L")
+head(Pseq, 5)
+```
+```{r samm2, results='hide', cache=TRUE, message=FALSE}
+# Réalisation analyse SAMM avec autres librairies
+## Typologie des sous-séquences
+Pdist <- seqdist(Pseq, method="LCS")
+Pclust <- pam(Pdist, diss=TRUE, k=2, cluster.only=TRUE)
+Ptypologies <- paste0("Clust", Pclust)
+## Competing risk models pour les trajectoires à la sortie de l'état "L"
+Peha <- seqsammeha(biofam.samm, "L", Ptypologies)
+multinom(SAMMtypology~spell.time+sex+scale(birthyr), data=Peha)
+```
+
+### Sequence History Analysis ###
+Enfin, la conversion vers un format adapté à l'analyse historique des séquences (*Sequence History Analysis*, SHA) est également proposé via la fonciton \texttt{seqsha()}.\
+
+```{r sha, message=FALSE, evaluate=FALSE, results='hide'}
+# Conversion au format SAH pour l'analyse de la trajectoire précédent 
+# l'état LMC (Left+Married+Child)
+bf.seq2 <- seqrecode(biofam.seq, recodes=list(LMC="LMC"), otherwise = "Other")
+dss <- seqdss(bf.seq2)
+time <- ifelse(dss[, 1]=="LMC", 1, seqdur(bf.seq2)[, 1])
+event <- dss[, 1]=="LMC"|dss[, 2]=="LMC"
+sha <- seqsha(biofam.seq, time, event, covar=biofam[, c("sex", "birthyr")])
+head(sha, 10)
+# Réalisation d'une analyse de SHA avec autres packages
+## Objet séquence sur les états précédents LMC
+previousTraj <- seqdef(sha[, 4:19])
+## Clustering
+diss <- seqdist(seqdss(previousTraj), method="LCS")
+pclust <- pam(diss, diss=TRUE, k=2, cluster.only=TRUE)
+sha$pclustname <- factor(paste("Type", pclust))
+## Modèle pour expliquer les typologies
+glm(event~time+pclustname+sex, data=sha, family=binomial)
+```
+
+
+# Autres types de séquences ###
+Enfin, les packages permettent également de définir des séquences d'évènements : une succession ordonnée de transitions, où chaque transition est une liste non-ordonnée d'évènements. La fonction \texttt{seqecreate()} permet de créer l'objet séquence d'évènement, la fonction \texttt{seqedplot()} permet de visualiser le nombre moyen d'occurence de chaque évènement aux différents points de temps et, de la même façon que pour les séquences d'états, il est possible de calculer la distance entre deux séquences d'évènements par Optimal Matching avec \texttt{seqedist()}. Illustrons cela sur nos données factices du début :
+$$X = (a, a, a, b,b,c,c)\quad \text{et}\quad Y= (a, a, a, c,c,c,c)$$
+que l'on peut voir comme :
+$$X = (a)\xrightarrow{3}(a\text{ vers } b)\xrightarrow{2}(b\text{ vers } c)$$
+$$Y = (a)\xrightarrow{3}(a\text{ vers } c)$$\
+
+```{r seqevent, cache=TRUE, message=FALSE,  fig.height=5, fig.width=10, fig.cap="Nombre moyen de transitions à chaque pas de temps"}
+# Données
+donnees_tse
+# Création objet séquence d'évènements
+data.eseq <- seqecreate(id=donnees_tse$id, timestamp=donnees_tse$time,
+	event=donnees_tse$event)
+data.eseq[1]
+data.eseq[2]
+# Plot
+seqedplot(data.eseq, type="hazard", main="", with.legend = "right" )
+# Calcul de distance avec Optimal Matching spécialement pour les séquences
+# d'évènements
+seqedist(data.eseq, idcost = rep(1,4), vparam=0.1)
+```
+
+```{r,eval=FALSE,echo=FALSE}
+library(TraMineR)
+
+# Liste des dataframes originaux
+list_shp <- list(shp_region, shp_com2, shp_hh29, shp_nbpers, shp_hi30)
+var_names <- c("region", "com2", "hh29", "nbpers", "hi30")
+
+# Fonction pour convertir un dataframe STS en SPELL
+get_spell <- function(df, var_name) {
+  # Transformation en objet de séquence temporaire
+  sq <- seqdef(df[, -1])
+  
+  # Conversion au format SPELL
+  spl <- seqformat(sq, from = "STS", to = "SPELL", id = df$idhous)
+  
+  # Renommer la colonne 'state' pour identifier la variable
+  colnames(spl)[which(colnames(spl) == "state")] <- var_name
+  return(spl)
+}
+
+# 1. On crée d'abord l'alphabet étendu (vu précédemment) pour identifier les ruptures
+# combined_data possède les états fusionnés (ex: "A/B/C/D/E")
+seq_total <- seqdef(combined_data[, -1])
+
+# 2. Conversion du bloc complet au format SPELL
+spell_global <- seqformat(seq_total, from = "STS", to = "SPELL", id = combined_data$idhous)
+
+# 3. Séparation des 5 variables stockées dans la colonne 'state'
+library(tidyr)
+
+spell_complete <- spell_global %>%
+  separate(states, into = var_names, sep = "/")
+
+write.csv(spell_complete, file="C:/Users/malnoeg/Documents/Stage_M2_SequenceAnalysis/Protocole/Code/data_SHP_spell.csv")
+```
+
